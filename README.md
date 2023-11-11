@@ -4,6 +4,7 @@ A simple command-line client to query the OpenAI GPT chat API.
 # Instructions
 
 - Place the script from `main/scripts/gpt-cli.sh` into your path.
+- Requires: bash, curl, jq, stdbuf, awk, sed, and other common tools
 - Ensure `gpt-cli.sh` is executable.
 - Feel free to rename it to something shorter or add an alias.
 - It will ask you for your OpenAI API Key the first time and save it in the settings file.
