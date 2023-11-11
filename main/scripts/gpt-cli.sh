@@ -5,7 +5,7 @@
 # allow -n# to take a number argument on how far back in the history to go
 # make -s ranges work backwards: 1..3 (normal), 3..1 (reverse order)
 # add an instruction (from a file or prompt for it?)
-# for -o/--instr, if instruction starts with @ treat as a file
+# for -o/--instr, if instruction starts with @ treat it as a file
 # delete/archive/fork chat, Fork chat: -F newChatID from-sequence#
 # ability to register arbitrary functions, enable/disable functions, etc
 # per chat settings? engine, summary, histsize?
@@ -265,7 +265,7 @@ detail_chat() {
     declare descfile="$CHATS/$1/description"
     declare desctext="untitled"
     if [[ -f "$descfile" ]]; then
-	desctext=$(<"$descfile")
+        desctext=$(<"$descfile")
     fi
     printf "%-${width}s [%04d]: %s\n" "$(label '%s' "${1}")" "$count" "$(title '%s' "$desctext")"
 }
@@ -311,7 +311,7 @@ tojsonlist() {
         else
             cat "$file"
         fi
-	((index++))
+        ((index++))
     done
     echo "]"
 }
@@ -385,8 +385,10 @@ show_chat() {
             chatpart_seq[$sequence_num]="${parts[1]}"
             chatpart_role[$sequence_num]="${parts[3]}"
         done
+
         declare -a chat_sequence=()
         for ((i=1; i<=last_sequence; i++)); do chat_sequence+=("$i"); done
+
         declare -a picked_sequence=()
         pick_range chat_sequence picked_sequence "$ranges"
         for chatkey in "${picked_sequence[@]}"; do
@@ -452,14 +454,14 @@ add_prompt() {
     if [[ $CHAT_TOKENS -le $CHAT_HISTSIZE ]]; then
         # we only actually add the chat content if it will fit
         if [[ "$1" == "-m" ]]; then
-	    # forward order
-	    CHAT_MESSAGES+=( "$3" )
-	    CHAT_MESSAGES+=( "$4" )
-	else
-	    # reverse order
-	    CHAT_HISTORY+=( "$4" )
-	    CHAT_HISTORY+=( "$3" )
-	fi
+            # forward order
+            CHAT_MESSAGES+=( "$3" )
+            CHAT_MESSAGES+=( "$4" )
+        else
+            # reverse order
+            CHAT_HISTORY+=( "$4" )
+            CHAT_HISTORY+=( "$3" )
+        fi
         return 0
     else
         # history is full
@@ -570,14 +572,14 @@ do_chat() {
             sysfiles+=( "$INSTRUCTIONS/$CHAT_OVERRIDE_INSTRUCTION" )
             if [[ "$CHAT_NOHIST" == "true" ]]; then
                 #trace '%s\n' "DEBUG: override system prompt & no chat history ${sysfiles[*]}" 1>&2
-		: nothing
+                : nothing
             else
                 readarray -t sysfiles < <(ls -A1f "${CHAT_DIR}" | grep '^asys_' | grep -v '_system$' | sort -V)
                 #trace '%s\n' "DEBUG: override system prompt & normal chat history ${sysfiles[*]}" 1>&2
             fi
         fi
         # append to array: readarray -O"${#a[@]}" -t a
-	#trace '%s\n' "DEBUG: sysfiles = ${sysfiles[*]}" 1>&2
+        #trace '%s\n' "DEBUG: sysfiles = ${sysfiles[*]}" 1>&2
         add_prompt_from_files -m "${sysfiles[@]}"
     fi
 
@@ -589,9 +591,9 @@ do_chat() {
     if [[ "${#chatfiles[@]}" -gt 0 ]]; then
         # figure out where we are in the sequence
         lastchat="${chatfiles[0]}"; # first one in the list is most recent
-	splitfilename parts "$lastchat"
+        splitfilename parts "$lastchat"
         sequence=$((10#${parts[1]})); incseq
-	#trace '%s\n' "DEBUG: adding to chat, sequence=$sequence, lastchat split = ${parts[*]}" 1>&2
+        #trace '%s\n' "DEBUG: adding to chat, sequence=$sequence, lastchat split = ${parts[*]}" 1>&2
 
         if [[ "$CHAT_NOHIST" != "true" ]]; then
             # load in our history chat
@@ -662,15 +664,15 @@ do_chat() {
     # summarize if needed
     if [[ "$CHAT_SUMMARIZE" == "true" ]] || [[ ! -f "$CHAT_DIR/description" ]]; then
         info '%s\n' "Asking $CHAT_SUMMARY to summarize this chat."
-	declare content
-	IFS= read -rd '' content <"$chatfile"
-	CHAT_MESSAGES+=( "$role" "$content" )
-	CHAT_MESSAGES+=( "user" "Write a very short summary of the chat so far to be used as a title, placed in double-quotes." )
-	KEEPFILE_SUMMARY_REQEUST="${CHAT_DIR}/.summary.request"
-	KEEPFILE_SUMMARY_RESPONSE="${CHAT_DIR}/.summary.response"
-	build_chat_completion "${CHAT_MESSAGES[@]}" > "$KEEPFILE_SUMMARY_REQEUST"
-	chat_completion "$(build_chat_completion "${CHAT_MESSAGES[@]}")" | tee "$KEEPFILE_SUMMARY_RESPONSE" | jq_stream_complete | $CHAT_STDBUF -i0 -o0 tee "$CHAT_DIR/description"
-	echo ""
+        declare content
+        IFS= read -rd '' content <"$chatfile"
+        CHAT_MESSAGES+=( "$role" "$content" )
+        CHAT_MESSAGES+=( "user" "Write a very short summary of the chat so far to be used as a title, placed in double-quotes." )
+        KEEPFILE_SUMMARY_REQEUST="${CHAT_DIR}/.summary.request"
+        KEEPFILE_SUMMARY_RESPONSE="${CHAT_DIR}/.summary.response"
+        build_chat_completion "${CHAT_MESSAGES[@]}" > "$KEEPFILE_SUMMARY_REQEUST"
+        chat_completion "$(build_chat_completion "${CHAT_MESSAGES[@]}")" | tee "$KEEPFILE_SUMMARY_RESPONSE" | jq_stream_complete | $CHAT_STDBUF -i0 -o0 tee "$CHAT_DIR/description"
+        echo ""
         if [[ "$CHAT_KEEPDATA" != "true" ]]; then
             rm -f "$KEEPFILE_SUMMARY_REQEUST" "$KEEPFILE_SUMMARY_RESPONSE"
         fi
@@ -689,8 +691,8 @@ if [[ ! -f "$INSTRUCTIONS/$CHAT_INSTRUCTION" ]]; then
         # bootstrap the very minimal assistant instruction
         echo "You are a helpful assistant." > "$INSTRUCTIONS/$CHAT_INSTRUCTION"
     else
-	error '%s\n' "Misconfigured instruction $(q "$INSTRUCTIONS/$CHAT_INSTRUCTION") is missing, please create it." 1>&2
-	exit 1
+        error '%s\n' "Misconfigured instruction $(q "$INSTRUCTIONS/$CHAT_INSTRUCTION") is missing, please create it." 1>&2
+        exit 1
     fi
 fi
 
@@ -745,8 +747,8 @@ usage() {
     echo '    *                            - join all remaining arguments and issue as chat prompt'
     echo ''
     echo 'A chat prompt of - will read standard input'
-    echo 'A chat prompt starting with / will be read as a filename'
-    echo 'A chat prompt of "@" will pop you into the vi editor in insert mode with paste turned on, save to evaluate as chat prompt'
+    echo 'A chat prompt of @ will pop you into the vi editor in insert mode with paste turned on, save to evaluate as chat prompt'
+    echo 'A chat prompt of @ followed by text will be read as a filename'
     echo 'Range can be a single number, negative numbers count from the end (-1 = last), a range with <start>..<end>, or a comma separated list of ranges.'
     echo 'Range can only count up, not in reverse.'
     echo ''
@@ -787,9 +789,9 @@ handle_prompt() {
             IFS= read -rd '' content <"/dev/stdin"
             do_chat "$content"
         ;;
-        /*)
+        @*)
             # read from file
-            IFS= read -rd '' content <"$1"
+            IFS= read -rd '' content <"${1#@}"
             do_chat "$content"
         ;;
         *) do_chat "$1" ;;
@@ -799,12 +801,12 @@ handle_prompt() {
 set_property_by_name() {
     # args: propertyName propertyValue
     if exists_in "$1" "${user_properties[@]}"; then
-	declare -n propertyRef="$1"
-	propertyRef="$2"
-	save_settings
+        declare -n propertyRef="$1"
+        propertyRef="$2"
+        save_settings
     else
         error '%s\n' "Invalidate property ${1} in -set" 1>&2
-	exit 1
+        exit 1
     fi
 }
 
@@ -838,9 +840,8 @@ while [[ $# -gt 0 ]]; do
         -3)                   CHAT_MODEL="gpt-3.5-turbo"; save_settings ;;
         -4p)                  CHAT_MODEL="gpt-4-1106-preview"; save_settings ;;
         -4)                   CHAT_MODEL="gpt-4"; save_settings ;;
-        @)                    handle_prompt "@" ;;
+        @*)                   handle_prompt "$1"; shift ;;
         -)                    handle_prompt "-" ;;
-        /*)                   handle_prompt "$1"; shift ;;
         -*)                   error '%s\n' "unknown option $1" 1>&2; : usage 1>&2; exit 1 ;;
         *)                    do_chat "$*"; exit 0 ;;
     esac
