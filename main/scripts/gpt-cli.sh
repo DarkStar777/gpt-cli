@@ -42,6 +42,7 @@ FUNCTIONS="$CHAT_BASEDIR/functions"
 SETTINGS_FILE="$CHAT_BASEDIR/settings"
 
 # per instance state (not saved)
+CHAT_SEED="null"
 CHAT_VERBOSE=false
 CHAT_NOHIST=false; # default unless we do -n
 CHAT_OVERRIDE_INSTRUCTION=""
@@ -64,6 +65,7 @@ user_properties+=( 'CHAT_INSTRUCTION' )
 user_properties+=( 'CHAT_KEEPDATA' )
 user_properties+=( 'URL_ENGINES' )
 user_properties+=( 'URL_CHAT' )
+user_properties+=( 'CHAT_TEMPERATURE' )
 
 if [[ -z "$CHAT_BASEDIR" ]]; then echo "CHAT_BASEDIR not set." 1>&2; exit 1; fi
 mkdir -p -m 700 "$CHAT_BASEDIR" || exit 1
@@ -113,7 +115,8 @@ load_settings() {
     if [[ -z "$CHAT_SUMMARY" ]]; then CHAT_SUMMARY="gpt-3.5-turbo"; save=true; fi
     if [[ -z "$URL_ENGINES" ]]; then URL_ENGINES="https://api.openai.com/v1/engines"; save=true; fi
     if [[ -z "$URL_CHAT" ]]; then URL_CHAT="https://api.openai.com/v1/chat/completions"; save=true; fi
-    #URL_COMPLETE="https://api.openai.com/v1/completions" #deprecated 
+    if [[ -z "$CHAT_TEMPERATURE" ]]; then CHAT_TEMPERATURE="null"; save=true; fi
+    #URL_COMPLETE="https://api.openai.com/v1/completions" #deprecated
     [[ "$save" == "true" ]] && save_settings
 }
 
@@ -337,9 +340,19 @@ build_chat_completion() {
     jq -n \
       --arg model "$CHAT_MODEL" \
       --argjson max_tokens "$CHAT_MAXTOKENS" \
+      --argjson temperature "$CHAT_TEMPERATURE" \
+      --argjson seed "$CHAT_SEED" \
       --argjson funcs "$functions" \
       --argjson msgs "$(echo "${msgs[*]}" | jq -s .)" \
-      '{model: $model, max_tokens: $max_tokens, stream: true, messages: $msgs, functions: $funcs}'
+      '{
+          model: $model,
+          stream: true,
+          messages: $msgs,
+          functions: $funcs
+      }
+      + (if $seed != null then {seed: $seed} else {} end)
+      + (if $temperature != null then {temperature: $temperature} else {} end)
+      + (if $max_tokens != null then {max_tokens: $max_tokens} else {} end)'
 }
 
 chat_completion() {
@@ -723,7 +736,7 @@ usage() {
     echo '    --help|-h|-?                 - print usage and exit'
     echo '    --sett*                      - settings: output settings'
     echo '    --id chatID                  - settings: set current chat id (CHAT_ID)'
-    echo '    --set property value         - settings: set a property (CHAT_KEEPDATA, URL_ENGINES, URL_CHAT)'
+    echo '    --set property value         - settings: set a property (CHAT_TEMPERATURE, CHAT_KEEPDATA, URL_ENGINES, URL_CHAT)'
     echo '    --to* api-token              - settings: set api token (CHAT_TOKEN)'
     echo '    --max* #tokens               - settings: set max token limit (CHAT_MAXTOKENS), default to "null"'
     echo '    --chatm* model               - settings: set completion model (CHAT_MODEL): gpt-3.5-turbo, gpt-4, ...'
@@ -732,6 +745,7 @@ usage() {
     echo '    --inst* instructionName      - settings: set default instruction to use with new chat (CHAT_INSTRUCTION), see also -o'
     echo '    --model name                 - list details for the named model'
     echo '    --models pattern             - list out all models that match grep pattern'
+    echo '    --seed integer               - temporarily set CHAT_SEED to a number'
     echo '    -l<num>|--list<=num>         - list out current chat and "num" most recent chats by ID'
     echo '    -s<range>|--show<=range>     - list chat history with optional range'
     echo '    -I                           - list instructions'
@@ -824,6 +838,7 @@ while [[ $# -gt 0 ]]; do
         -sett*|--sett*)       show_settings ;;
         -model|--model)       get_model "$2"; shift ;;
         -models|--models)     list_models "$2"; shift ;;
+        --seed)               CHAT_SEED="$2"; shift ;;
         -l|-list|--list)      list_recent_chats "999" ;;
         -list=*|--list=*)     list_recent_chats "${1#*=}" ;;
         -l*)                  list_recent_chats "${1#-l}" ;;
