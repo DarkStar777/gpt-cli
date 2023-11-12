@@ -42,6 +42,7 @@ FUNCTIONS="$CHAT_BASEDIR/functions"
 SETTINGS_FILE="$CHAT_BASEDIR/settings"
 
 # per instance state (not saved)
+CHAT_INSTRUCTION_FILE=""
 CHAT_SEED="null"
 CHAT_VERBOSE=false
 CHAT_NOHIST=false; # default unless we do -n
@@ -54,7 +55,7 @@ CHAT_MESSAGES=()
 CHAT_HISTORY=()
 
 # the list of variables we will save in save_settings
-declare -a user_properties
+declare -a user_properties=()
 user_properties+=( 'CHAT_TOKEN' )
 user_properties+=( 'CHAT_MAXTOKENS' )
 user_properties+=( 'CHAT_MODEL' )
@@ -69,7 +70,6 @@ user_properties+=( 'CHAT_TEMPERATURE' )
 
 if [[ -z "$CHAT_BASEDIR" ]]; then echo "CHAT_BASEDIR not set." 1>&2; exit 1; fi
 mkdir -p -m 700 "$CHAT_BASEDIR" || exit 1
-mkdir -p -m 700 "$INSTRUCTIONS" || exit 1
 mkdir -p -m 700 "$FUNCTIONS" || exit 1
 mkdir -p -m 700 "$CHATS" || exit 1
 
@@ -117,6 +117,7 @@ load_settings() {
     if [[ -z "$URL_CHAT" ]]; then URL_CHAT="https://api.openai.com/v1/chat/completions"; save=true; fi
     if [[ -z "$CHAT_TEMPERATURE" ]]; then CHAT_TEMPERATURE="null"; save=true; fi
     #URL_COMPLETE="https://api.openai.com/v1/completions" #deprecated
+    set_instruction
     [[ "$save" == "true" ]] && save_settings
 }
 
@@ -295,10 +296,10 @@ list_instructions() {
 }
 
 token_estimate() {
-    # args: content
+    # stdin: content
     # stdout: estimated token count
     # just a swag at the number of words plus non-word characters
-    awk '{ gsub(/[a-zA-Z]+/, "X"); gsub(/[ \t\r\n]+/, ""); n += length($0); } END { print n }' <<< "$1"
+    awk '{ gsub(/[a-zA-Z]+/, "X"); gsub(/[ \t\r\n]+/, ""); n += length($0); } END { print n }'
 }
 
 tojsonlist() {
@@ -377,10 +378,10 @@ splitfilename() {
 }
 
 show_chat() {
-    # args: ranges
+    # args: show_ranges
     # stdout: dump out chat history
     declare chat_directory="$CHATS/$CHAT_ID"
-    declare ranges="${1:-'1..-1'}"
+    declare show_ranges="${1:-'1..-1'}"
     declare nullglob_was_set=$(shopt -p nullglob)  # Save the state of nullglob
     if [[ -d "$chat_directory" ]]; then
         shopt -s nullglob  # Temporarily turn on nullglob
@@ -403,7 +404,7 @@ show_chat() {
         for ((i=1; i<=last_sequence; i++)); do chat_sequence+=("$i"); done
 
         declare -a picked_sequence=()
-        pick_range chat_sequence picked_sequence "$ranges"
+        pick_range chat_sequence picked_sequence "$show_ranges"
         for chatkey in "${picked_sequence[@]}"; do
             if [[ -n "${chatpart_file[$chatkey]}" ]]; then
                 label '%s\n' "${chatpart_seq[$chatkey]} - ${chatpart_role[$chatkey]}:"
@@ -440,7 +441,7 @@ analyze_results() {
     # args:
     # stdin: openai chat json stream
     # stdout: role\nfinish_reason\nfunctionName\ntokenCount\n
-    # scan through openai api stream output and extract: role, finish_reason, functionName, and tokenCount
+    # scan through openai api stream output and extract: role, finish_reason, function_name, and tokenCount
     # values will be 'null' if empty
     sed -e '/^$/d; /^data: \[DONE]/d; s/data: //' | \
     jq -nj '
@@ -457,8 +458,22 @@ analyze_results() {
 install_instruction() {
     # copy currently selected CHAT_INSTRUCTION into the chat
     declare sys_tokens
-    sys_tokens="$(token_estimate "$INSTRUCTIONS/$CHAT_INSTRUCTION")"; # TODO: just a rough estimate for now
-    cp "$INSTRUCTIONS/$CHAT_INSTRUCTION" "$(make_chat_filename asys 1 "$sys_tokens" system)"
+    sys_tokens="$(token_estimate < "$CHAT_INSTRUCTION_FILE")"; # TODO: just a rough estimate for now
+    cp "$CHAT_INSTRUCTION_FILE" "$(make_chat_filename asys 1 "$sys_tokens" system)"
+}
+
+set_instruction() {
+    # args: instruction_@file_or_reference
+    CHAT_INSTRUCTION=${1:-"$CHAT_INSTRUCTION"}
+    if [[ "$CHAT_INSTRUCTION" =~ ^@ ]]; then
+        CHAT_INSTRUCTION_FILE="${CHAT_INSTRUCTION#@}"
+    else
+        CHAT_INSTRUCTION_FILE="$INSTRUCTIONS/$CHAT_INSTRUCTION"
+    fi
+    if [[ ! -f "$CHAT_INSTRUCTION_FILE" ]]; then
+        warning '%s\n' "Instruction file $(q "$CHAT_INSTRUCTION") is missing." 1>&2
+        #exit 1
+    fi
 }
 
 add_prompt() {
@@ -511,7 +526,7 @@ add_prompt_from_files() {
             add_prompt "$target" "${parts[2]}" "${parts[3]}" "$content" || break
         else
             # intended use is for instruction override
-            add_prompt "$target" "$(token_estimate "$content")" system "$content" || break
+            add_prompt "$target" "$(token_estimate <<< "$content")" system "$content" || break
         fi
     done
 }
@@ -541,64 +556,87 @@ get_next_sequence_number() {
     echo -n $(( $(get_sequence_number "$1") + 1 ))
 }
 
-do_chat() {
-    # args: prompt
-    # stdout: chat completion output
-    # now that this is working smoothly we can work on refactoring
+initialize_chat_dir() {
+    # return true if new chat
     CHAT_DIR="$CHATS/$CHAT_ID"
-    declare prompt="$1"
-    declare tag="chat"
     CHAT_MESSAGES=()
     CHAT_HISTORY=()
     CHAT_TOKENS=0
-
-    #trace '%s\n' "DEBUG: CHAT_DIR = ${CHAT_DIR}" 1>&2
-
     if [[ ! -d "$CHAT_DIR" ]]; then
-        # create new chat and initialize it
-        tag="asys"; # add the user prompt as this type
         mkdir -p -m 700 "$CHAT_DIR"
         info '%s\n' "Initializing chat ${CHAT_ID} from $CHAT_INSTRUCTION"
         install_instruction
         sequence=2
-        add_prompt_from_files -m "$INSTRUCTIONS/$CHAT_INSTRUCTION"
+        add_prompt_from_files -m "$CHAT_INSTRUCTION_FILE"
+        return 0
+    fi
+    return 1
+}
+
+handle_finish_reason() {
+    declare finish_reason="$1"
+    declare contentfile="$2"
+    declare function_name="$3"
+    declare completion_tokens="$4"
+
+    if [[ $CHAT_VERBOSE == "true" ]]; then
+        aux '\n%s\n' "[${finish_reason}:${completion_tokens}]"
+    fi
+
+    case $finish_reason in
+        stop)
+        ;;
+        function_call)
+            declare command_string
+            IFS= read -rd '' command_string < <(jq -r '[.command] | @sh' <"$contentfile")
+            info '%s\n' "FUNCTION ${function_name}: $command_string"
+        ;;
+        *)
+            error '%s\n' "BAD JSON RESPONSE: $json_responsefile" 1>&2
+            grep '"message":' "$json_responsefile" 1>&2
+            exit 1
+        ;;
+    esac
+}
+
+select_history_files() {
+    # We have two options to deal with:
+    #     CHAT_OVERRIDE_INSTRUCTION -- load from an instruction file and skip asys_*_system
+    #     CHAT_NOHIST               -- do not load *_user chat files
+    if [[ "$CHAT_OVERRIDE_INSTRUCTION" == "" ]]; then
+        if [[ "$CHAT_NOHIST" == "true" ]]; then
+            # asys_* minus *_user
+            ls -A1f "${CHAT_DIR}" | grep '^asys_' | grep -v '_user$' | sort -V
+        else
+            # asys_*
+            ls -A1f "${CHAT_DIR}" | grep '^asys_' | sort -V
+        fi
+    else
+        # load the CHAT_OVERRIDE_INSTRUCTION instead of the chat instruction
+        echo "$CHAT_OVERRIDE_INSTRUCTION"
+        if [[ "$CHAT_NOHIST" != "true" ]]; then
+            # asys_* minus *_system
+            ls -A1f "${CHAT_DIR}" | grep '^asys_' | grep -v '_system$' | sort -V
+        fi
+    fi
+}
+
+do_chat() {
+    # args: prompt
+    # stdout: chat completion output
+    # now that this is working smoothly we can work on refactoring
+    declare prompt="$1"
+    declare tag="chat"
+    if initialize_chat_dir; then
+        tag="asys"
     else
         declare -a sysfiles
-        sysfiles=()
-
-        tag="chat"
-
-        # We have two options to deal with:
-        #     CHAT_OVERRIDE_INSTRUCTION -- load from an instruction file and skip asys_*_system
-        #     CHAT_NOHIST               -- do not load *_user chat files
-        if [[ "$CHAT_OVERRIDE_INSTRUCTION" == "" ]]; then
-            if [[ "$CHAT_NOHIST" == "true" ]]; then
-                readarray -t sysfiles < <(ls -A1f "${CHAT_DIR}" | grep '^asys_' | grep -v '_user$' | sort -V)
-                #trace '%s\n' "DEBUG: chat system prompt & no chat history ${sysfiles[*]}" 1>&2
-            else
-                # the normal case, we read everything starting with ayss
-                readarray -t sysfiles < <(ls -A1f "${CHAT_DIR}" | grep '^asys_' | sort -V)
-                #trace '%s\n' "DEBUG: chat system prompt & normal chat history ${sysfiles[*]}" 1>&2
-            fi
-        else
-            # load the CHAT_OVERRIDE_INSTRUCTION instead of the chat instruction
-            sysfiles+=( "$INSTRUCTIONS/$CHAT_OVERRIDE_INSTRUCTION" )
-            if [[ "$CHAT_NOHIST" == "true" ]]; then
-                #trace '%s\n' "DEBUG: override system prompt & no chat history ${sysfiles[*]}" 1>&2
-                : nothing
-            else
-                readarray -t sysfiles < <(ls -A1f "${CHAT_DIR}" | grep '^asys_' | grep -v '_system$' | sort -V)
-                #trace '%s\n' "DEBUG: override system prompt & normal chat history ${sysfiles[*]}" 1>&2
-            fi
-        fi
-        # append to array: readarray -O"${#a[@]}" -t a
-        #trace '%s\n' "DEBUG: sysfiles = ${sysfiles[*]}" 1>&2
+        readarray -t sysfiles < <(select_history_files)
         add_prompt_from_files -m "${sysfiles[@]}"
     fi
 
-    declare -a chatfiles
-
     # reverse order is for the token counting
+    declare -a chatfiles
     readarray -t chatfiles < <(ls -A1f "${CHAT_DIR}" | grep '^chat' | sort -Vr)
     #trace '%s\n' "DEBUG: chatfiles = ${chatfiles[*]}" 1>&2
     if [[ "${#chatfiles[@]}" -gt 0 ]]; then
@@ -637,37 +675,21 @@ do_chat() {
     fi
 
     chat_completion "$json_request" | $CHAT_STDBUF -oL tee "$json_responsefile" | jq_stream_complete | $CHAT_STDBUF -i0 -o0 tee "$contentfile"
+    echo ""
+
     declare -a status=( "${PIPESTATUS[@]}" )
-    [[ "${status[*]}" =~ [^0\ ] ]] && error '%s\n' "Failed return status from chat pipeline: $status" 1>&2
+    [[ "${status[*]}" =~ [^0\ ] ]] && error '%s\n' "Failed return status from chat pipeline: ${status[*]}" 1>&2
 
     declare -a chat_status
     readarray -t chat_status < <(analyze_results < "$json_responsefile")
     declare role="${chat_status[0]}"
     declare finish_reason="${chat_status[1]}"
-    declare functionName="${chat_status[2]}"
+    declare function_name="${chat_status[2]}"
     declare completion_tokens="${chat_status[3]}"
 
-    if [[ $CHAT_VERBOSE == "true" ]]; then
-        aux '\n%s\n' "[${finish_reason}:${completion_tokens}]"
-    else
-        echo ""
-    fi
+    handle_finish_reason "$finish_reason" "$contentfile" "$function_name" "$completion_tokens"
 
-    case $finish_reason in
-        stop)
-        ;;
-        function_call)
-            IFS= read -rd '' command_string < <(jq -r '[.command] | @sh' <"$contentfile")
-            info '%s\n' "FUNCTION ${functionName}: $command_string"
-        ;; 
-        *)
-            error '%s\n' "BAD JSON RESPONSE: $json_responsefile" 1>&2
-            grep '"message":' "$json_responsefile" 1>&2
-            exit 1
-        ;;
-    esac
-
-    declare est_prompt_tokens="$(token_estimate "$prompt")"
+    declare est_prompt_tokens="$(token_estimate <<< "$prompt")"
     declare promptfile="$(make_chat_filename "$tag" "$sequence" "$est_prompt_tokens" user)"; incseq
     echo "$prompt" > "$promptfile"; # save the prompt text
 
@@ -697,17 +719,17 @@ do_chat() {
 }
 #====================================================================================================
 
-load_settings
-
-if [[ ! -f "$INSTRUCTIONS/$CHAT_INSTRUCTION" ]]; then
-    if [[ "$CHAT_INSTRUCTION" = "assistant" ]]; then
-        # bootstrap the very minimal assistant instruction
-        echo "You are a helpful assistant." > "$INSTRUCTIONS/$CHAT_INSTRUCTION"
-    else
-        error '%s\n' "Misconfigured instruction $(q "$INSTRUCTIONS/$CHAT_INSTRUCTION") is missing, please create it." 1>&2
-        exit 1
+# bootstrap instructions if needed
+if [[ ! -d "$INSTRUCTIONS" ]]; then
+    info '%s\n' "Creating $INSTRUCTIONS"
+    mkdir -p -m 700 "$INSTRUCTIONS" || exit 1
+    if [[ ! -f "$INSTRUCTIONS/assistant" ]]; then
+        info '%s\n' "Creating ${INSTRUCTIONS}/assistant"
+        echo "You are a helpful assistant." > "$INSTRUCTIONS/assistant"
     fi
 fi
+
+load_settings
 
 # bootstrap the bash sample function
 if [[ ! -f "$FUNCTIONS/bash" ]]; then
@@ -778,10 +800,6 @@ usage() {
     echo 'Example: chat -n "what is 1+1?" -id geekchat -c "what is a disturginator?" -id bookchat what book should I write next?'
 }
 
-verify_instruction() {
-    if [[ ! -f "$INSTRUCTIONS/$CHAT_INSTRUCTION" ]]; then error '%s\n' "Instruction file $(q "$INSTRUCTIONS/$CHAT_INSTRUCTION") does not exist" 1>&2; exit 1; fi
-}
-
 handle_prompt() {
     # args: prompt|@|-|/*
     declare content
@@ -817,9 +835,10 @@ set_property_by_name() {
     if exists_in "$1" "${user_properties[@]}"; then
         declare -n propertyRef="$1"
         propertyRef="$2"
+        [[ $1 = "CHAT_INSTRUCTION" ]] && set_instruction
         save_settings
     else
-        error '%s\n' "Invalidate property ${1} in -set" 1>&2
+        error '%s\n' "Invalid property ${1} in --set" 1>&2
         exit 1
     fi
 }
@@ -833,7 +852,7 @@ while [[ $# -gt 0 ]]; do
         -sum*|--sum*)         CHAT_SUMMARY="$2"; save_settings; shift ;;
         -hist*|--hist*)       CHAT_HISTSIZE="$2"; save_settings; shift ;;
         -id|--id)             CHAT_ID="$2"; save_settings; shift ;;
-        -inst*|--inst*)       CHAT_INSTRUCTION="$2"; verify_instruction; save_settings; shift ;;
+        -inst*|--inst*)       set_instruction "$2"; save_settings; shift ;;
         -set|--set)           set_property_by_name "$2" "$3"; save_settings; shift 2 ;;
         -sett*|--sett*)       show_settings ;;
         -model|--model)       get_model "$2"; shift ;;
