@@ -675,10 +675,9 @@ do_chat() {
     fi
 
     chat_completion "$json_request" | $CHAT_STDBUF -oL tee "$json_responsefile" | jq_stream_complete | $CHAT_STDBUF -i0 -o0 tee "$contentfile"
-    echo ""
-
     declare -a status=( "${PIPESTATUS[@]}" )
     [[ "${status[*]}" =~ [^0\ ] ]] && error '%s\n' "Failed return status from chat pipeline: ${status[*]}" 1>&2
+    echo ""
 
     declare -a chat_status
     readarray -t chat_status < <(analyze_results < "$json_responsefile")
