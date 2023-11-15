@@ -24,6 +24,7 @@
 #CHAT_HOMEDIR="$(realpath -e "$(dirname "${BASH_SOURCE[0]}")")"
 
 # ENVIRONMENT:
+shopt -s nullglob  # turn on nullglob
 CHAT_COMMAND_NAME="${0##*/}"
 CHAT_BASEDIR="${CHAT_BASEDIR:-$HOME/.chat}"; # where do we store the chats
 CURL_WAIT_CONNECT="${CURL_WAIT_CONNECT:-0}"; # curl --connect-timeout
@@ -69,9 +70,33 @@ user_properties+=( 'URL_CHAT' )
 user_properties+=( 'CHAT_TEMPERATURE' )
 
 if [[ -z "$CHAT_BASEDIR" ]]; then echo "CHAT_BASEDIR not set." 1>&2; exit 1; fi
-mkdir -p -m 700 "$CHAT_BASEDIR" || exit 1
-mkdir -p -m 700 "$FUNCTIONS" || exit 1
-mkdir -p -m 700 "$CHATS" || exit 1
+mkdir -p -m 700 "$CHAT_BASEDIR"
+mkdir -p -m 700 "$CHATS"
+
+# bootstrap the bash sample function
+if [[ ! -d "$FUNCTIONS" ]]; then
+    mkdir -p -m 700 "$FUNCTIONS"
+    if [[ ! -f "$FUNCTIONS/bash" ]]; then
+        cat > "$FUNCTIONS/bash" << 'EOF'
+{
+  "name": "bash",
+  "description": "Execute bash code on the remote agent when asked to write a bash script.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "description": "The bash shell commands to execute.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "command"
+    ]
+  }
+}
+EOF
+    fi
+fi
 
 #notused
 p() { declare -n arr="$1"; echo "${arr[@]}"; }
@@ -305,19 +330,23 @@ token_estimate() {
 tojsonlist() {
     # args: function_file ...
     # stdout: json array of combined file contents
-    echo "["
-    declare index=1
-    declare last_index=$#
-    for file in "$@"; do
-        if [[ $index -ne $last_index ]]; then
-            cat "$file"
-            echo ","
-        else
-            cat "$file"
-        fi
-        ((index++))
-    done
-    echo "]"
+    if [[ $# -eq 0 ]]; then
+        echo "null"
+    else
+        echo "["
+        declare index=1
+        declare last_index=$#
+        for file in "$@"; do
+            if [[ $index -ne $last_index ]]; then
+                cat "$file"
+                echo ","
+            else
+                cat "$file"
+            fi
+            ((index++))
+        done
+        echo "]"
+    fi
 }
 
 build_chat_completion() {
@@ -333,24 +362,21 @@ build_chat_completion() {
         msgs+=("$(jq -cn --arg r "${!i}" --arg c "${!j}" '{role: $r, content: $c}')")
     done
 
-    #TODO: need to figure out how to load functions dynamically and also have none
-    #TODO: for now we have one function hardcodded as a proof of concept
-    declare functions
-    functions="$(tojsonlist "$FUNCTIONS/bash")"
+    declare functions="$(tojsonlist "$FUNCTIONS"/*)"
 
     jq -n \
       --arg model "$CHAT_MODEL" \
-      --argjson max_tokens "$CHAT_MAXTOKENS" \
-      --argjson temperature "$CHAT_TEMPERATURE" \
-      --argjson seed "$CHAT_SEED" \
-      --argjson funcs "$functions" \
+      --argjson max_tokens "${CHAT_MAXTOKENS:-null}" \
+      --argjson temperature "${CHAT_TEMPERATURE:-null}" \
+      --argjson seed "${CHAT_SEED:-null}" \
+      --argjson funcs "${functions:-null}" \
       --argjson msgs "$(echo "${msgs[*]}" | jq -s .)" \
       '{
           model: $model,
           stream: true,
           messages: $msgs,
-          functions: $funcs
       }
+      + (if $funcs != null then {functions: $funcs} else {} end)
       + (if $seed != null then {seed: $seed} else {} end)
       + (if $temperature != null then {temperature: $temperature} else {} end)
       + (if $max_tokens != null then {max_tokens: $max_tokens} else {} end)'
@@ -382,9 +408,7 @@ show_chat() {
     # stdout: dump out chat history
     declare chat_directory="$CHATS/$CHAT_ID"
     declare show_ranges="${1:-'1..-1'}"
-    declare nullglob_was_set=$(shopt -p nullglob)  # Save the state of nullglob
     if [[ -d "$chat_directory" ]]; then
-        shopt -s nullglob  # Temporarily turn on nullglob
         readarray -t chatfiles < <(printf '%s\n' "${chat_directory}"/{asys*,chat*})
 
         # to map from a number to the actual chat data, some sequence# might not exist
@@ -412,8 +436,6 @@ show_chat() {
                 darkgrey '%s\n' "====="
             fi
         done
-
-        eval "$nullglob_was_set"  # Restore the original state of nullglob
     else
         error '%s\n' "Chat $CHAT_ID does not exist"
     fi
@@ -480,7 +502,7 @@ add_prompt() {
     # args: target(-h|-m) token_count role content
     CHAT_TOKENS=$(( CHAT_TOKENS + 10#"$2" ))
     if [[ $CHAT_TOKENS -le $CHAT_HISTSIZE ]]; then
-        # we only actually add the chat content if it will fit
+        # we add the chat content if it will fit
         if [[ "$1" == "-m" ]]; then
             # forward order
             CHAT_MESSAGES+=( "$3" )
@@ -537,15 +559,12 @@ get_sequence_number() {
     declare chat_directory="${CHATS}/$1"
     declare last_sequence=0  # Assume no sequence files to start with
     declare filename parts sequence_num
-    declare nullglob_was_set=$(shopt -p nullglob)  # Save the state of nullglob
     if [[ -d "$chat_directory" ]]; then
-        shopt -s nullglob  # Temporarily turn on nullglob
         for filepath in "$chat_directory"/chat_*; do
             splitfilename parts "${filepath##*/}"
             sequence_num=$((10#${parts[1]}))
             ((sequence_num > last_sequence)) && last_sequence=$sequence_num
         done
-        eval "$nullglob_was_set"  # Restore the original state of nullglob
     fi
     echo -n $last_sequence
 }
@@ -721,7 +740,7 @@ do_chat() {
 # bootstrap instructions if needed
 if [[ ! -d "$INSTRUCTIONS" ]]; then
     info '%s\n' "Creating $INSTRUCTIONS"
-    mkdir -p -m 700 "$INSTRUCTIONS" || exit 1
+    mkdir -p -m 700 "$INSTRUCTIONS"
     if [[ ! -f "$INSTRUCTIONS/assistant" ]]; then
         info '%s\n' "Creating ${INSTRUCTIONS}/assistant"
         echo "You are a helpful assistant." > "$INSTRUCTIONS/assistant"
@@ -729,28 +748,6 @@ if [[ ! -d "$INSTRUCTIONS" ]]; then
 fi
 
 load_settings
-
-# bootstrap the bash sample function
-if [[ ! -f "$FUNCTIONS/bash" ]]; then
-    cat > "$FUNCTIONS/bash" << 'EOF'
-{
-  "name": "bash",
-  "description": "Execute bash code on the remote agent when asked to write a bash script.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "command": {
-        "description": "The bash shell commands to execute.",
-        "type": "string"
-      }
-    },
-    "required": [
-      "command"
-    ]
-  }
-}
-EOF
-fi
 
 usage() {
     echo "${CHAT_COMMAND_NAME} [options] [prompt]"
