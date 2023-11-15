@@ -19,14 +19,15 @@
 # Create image variation # POST https://api.openai.com/v1/images/variations
 # Create embeddings # POST https://api.openai.com/v1/embeddings
 
-# DEBUG LOAD: source <(sed -ne '/^#=====/,/^#=====/p' < chatgpt-cli.sh)
+# DEBUG LOAD: source <(sed -ne '/^#=====/,/^#=====/p' < gpt-cli.sh)
 #====================================================================================================
 #CHAT_HOMEDIR="$(realpath -e "$(dirname "${BASH_SOURCE[0]}")")"
 
 # ENVIRONMENT:
-shopt -s nullglob  # turn on nullglob
+shopt -s nullglob; # turn on nullglob
 CHAT_COMMAND_NAME="${0##*/}"
 CHAT_BASEDIR="${CHAT_BASEDIR:-$HOME/.chat}"; # where do we store the chats
+if [[ -z "$CHAT_BASEDIR" ]]; then echo "CHAT_BASEDIR not set." 1>&2; exit 1; fi
 CURL_WAIT_CONNECT="${CURL_WAIT_CONNECT:-0}"; # curl --connect-timeout
 CURL_WAIT_COMPLETE="${CURL_WAIT_COMPLETE:-0}"; # curl -w
 if [[ -t 1 ]]; then
@@ -68,35 +69,6 @@ user_properties+=( 'CHAT_KEEPDATA' )
 user_properties+=( 'URL_ENGINES' )
 user_properties+=( 'URL_CHAT' )
 user_properties+=( 'CHAT_TEMPERATURE' )
-
-if [[ -z "$CHAT_BASEDIR" ]]; then echo "CHAT_BASEDIR not set." 1>&2; exit 1; fi
-mkdir -p -m 700 "$CHAT_BASEDIR"
-mkdir -p -m 700 "$CHATS"
-
-# bootstrap the bash sample function
-if [[ ! -d "$FUNCTIONS" ]]; then
-    mkdir -p -m 700 "$FUNCTIONS"
-    if [[ ! -f "$FUNCTIONS/bash" ]]; then
-        cat > "$FUNCTIONS/bash" << 'EOF'
-{
-  "name": "bash",
-  "description": "Execute bash code on the remote agent when asked to write a bash script.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "command": {
-        "description": "The bash shell commands to execute.",
-        "type": "string"
-      }
-    },
-    "required": [
-      "command"
-    ]
-  }
-}
-EOF
-    fi
-fi
 
 #notused
 p() { declare -n arr="$1"; echo "${arr[@]}"; }
@@ -735,19 +707,6 @@ do_chat() {
         rm -f "$json_requestfile" "$json_responsefile"
     fi
 }
-#====================================================================================================
-
-# bootstrap instructions if needed
-if [[ ! -d "$INSTRUCTIONS" ]]; then
-    info '%s\n' "Creating $INSTRUCTIONS"
-    mkdir -p -m 700 "$INSTRUCTIONS"
-    if [[ ! -f "$INSTRUCTIONS/assistant" ]]; then
-        info '%s\n' "Creating ${INSTRUCTIONS}/assistant"
-        echo "You are a helpful assistant." > "$INSTRUCTIONS/assistant"
-    fi
-fi
-
-load_settings
 
 usage() {
     echo "${CHAT_COMMAND_NAME} [options] [prompt]"
@@ -838,6 +797,46 @@ set_property_by_name() {
         exit 1
     fi
 }
+#====================================================================================================
+
+mkdir -p -m 700 "$CHAT_BASEDIR"
+mkdir -p -m 700 "$CHATS"
+# bootstrap instructions if needed
+if [[ ! -d "$INSTRUCTIONS" ]]; then
+    info '%s\n' "Creating $INSTRUCTIONS"
+    mkdir -p -m 700 "$INSTRUCTIONS"
+    if [[ ! -f "$INSTRUCTIONS/assistant" ]]; then
+        info '%s\n' "Creating ${INSTRUCTIONS}/assistant"
+        echo "You are a helpful assistant." > "$INSTRUCTIONS/assistant"
+    fi
+fi
+
+# bootstrap the bash sample function
+if [[ ! -d "$FUNCTIONS" ]]; then
+    mkdir -p -m 700 "$FUNCTIONS"
+    if [[ ! -f "$FUNCTIONS/bash" ]]; then
+        cat > "$FUNCTIONS/bash" << 'EOF'
+{
+  "name": "bash",
+  "description": "Execute bash code on the remote agent when asked to write a bash script.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "description": "The bash shell commands to execute.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "command"
+    ]
+  }
+}
+EOF
+    fi
+fi
+
+load_settings
 
 while [[ $# -gt 0 ]]; do
     case $1 in

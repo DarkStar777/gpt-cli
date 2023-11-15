@@ -5,8 +5,8 @@
 #
 export CHAT_BASEDIR=$(realpath -m testgptcli)
 export COLOR_CHAT=false
-export CURL_WAIT_CONNECT=15
-export CURL_WAIT_COMPLETE=30
+export CURL_WAIT_CONNECT=30
+export CURL_WAIT_COMPLETE=60
 error() {
     # args: text...
     echo "$*" 1>&2
@@ -99,7 +99,7 @@ q() {
     echo "${a[*]}"
 }
 declare TEMPORARY_STDERR="$(mktemp)"
-cleanup() { rm -f "$TEMPORARY_STDERR"; }
+cleanup() { trap '' EXIT; rm -f "$TEMPORARY_STDERR"; exit 1; }
 trap cleanup INT
 trap cleanup EXIT
 rungpt() {
